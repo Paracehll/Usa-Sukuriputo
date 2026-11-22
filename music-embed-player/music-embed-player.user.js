@@ -4,7 +4,7 @@
 // @name:en      Music Embed Player (YouTube / Bandcamp / SoundCloud / Spotify) — Universal
 // @name:ja      音楽埋め込みプレーヤー (YouTube / Bandcamp / SoundCloud / Spotify) — 汎用版
 // @namespace    https://github.com/Paracehll/Usa-Sukuriputo
-// @version      1.0.0
+// @version      1.0.1
 // @description  將網頁中的 YouTube、Bandcamp、SoundCloud、Spotify 連結換成小播放器（YouTube 為隱藏的嵌入播放器，只留聲音）。透過「站點設定檔 + CSS 選擇器」匹配各網站的貼文與預覽卡片，支援 Threads、X、Instagram、Facebook、Messenger（找不到設定檔時使用通用規則）。Spotify 僅支援 30 秒試聽。
 // @description:zh-TW 將網頁中的 YouTube、Bandcamp、SoundCloud、Spotify 連結換成小播放器（YouTube 為隱藏的嵌入播放器，只留聲音）。透過「站點設定檔 + CSS 選擇器」匹配各網站的貼文與預覽卡片，支援 Threads、X、Instagram、Facebook、Messenger（找不到設定檔時使用通用規則）。Spotify 僅支援 30 秒試聽。
 // @description:en Replaces YouTube, Bandcamp, SoundCloud and Spotify links on web pages with a compact player (YouTube uses a hidden embedded player, audio only). Per-site profiles with CSS selectors match each site's posts and link preview cards: Threads, X, Instagram, Facebook and Messenger are covered (a generic rule is used when no profile matches). Spotify is limited to 30-second previews.
@@ -235,7 +235,26 @@
       subline = 'by ' + bandName;
     }
 
-    return { artist: d.artist, album: d.current && d.current.title, subline, tracks };
+    const trackKeys = (d.trackinfo || [])
+      .map((t) => t.title_link)
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return keyOf(new URL(l, url));
+        } catch (e) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+
+    return {
+      artist: d.artist,
+      album: d.current && d.current.title,
+      subline,
+      isAlbum: new URL(url).pathname.startsWith('/album'),
+      trackKeys,
+      tracks,
+    };
   }
 
   // 盡力而為：從頁面的 __sc_hydration 取 client_id 與 progressive 串流網址
@@ -544,7 +563,7 @@
     info.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;';
 
     const title = document.createElement('div');
-    title.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;';
+    title.style.cssText = 'flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;';
 
     const subline = document.createElement('div');
     subline.style.cssText =
@@ -575,22 +594,24 @@
     open.style.cssText = 'flex:none;color:inherit;opacity:.65;text-decoration:none;font-size:14px;line-height:1;';
 
     bar.append(seek, time, open);
-    info.append(title, subline, bar);
 
     const multi = meta.tracks.length > 1;
     const prev = document.createElement('button');
     const next = document.createElement('button');
     [prev, next].forEach((b) => {
       b.type = 'button';
-      b.style.cssText = btnStyle + 'width:24px;height:24px;color:inherit;';
+      b.style.cssText = btnStyle + 'width:20px;height:20px;font-size:12px;color:inherit;opacity:.75;';
     });
     prev.textContent = '⏮';
     next.textContent = '⏭';
 
-    wrap.append(play);
-    if (multi) wrap.append(prev);
-    wrap.append(info);
-    if (multi) wrap.append(next);
+    const titleRow = document.createElement('div');
+    titleRow.style.cssText = 'display:flex;align-items:center;gap:4px;min-width:0;';
+    titleRow.append(title);
+    if (multi) titleRow.append(prev, next);
+
+    info.append(titleRow, subline, bar);
+    wrap.append(play, info);
     root.append(wrap);
 
     // 避免點擊播放器時觸發宿主頁面（例如貼文導航）
@@ -603,6 +624,9 @@
     const audio = isYT ? new YTAudio(root) : new Audio();
     if (!isYT) audio.preload = 'none';
     host._audio = audio;
+    host._meta = meta;
+    host._kind = kind;
+    host._origUrl = origUrl;
     const blobs = []; // 每首曲目的 blob URL 快取
     let idx = 0;
     let loading = false;
@@ -718,6 +742,30 @@
     }
   }
 
+  // 同一則貼文裡若已有 Bandcamp 專輯播放器，移除屬於該專輯曲目的單曲播放器
+  function dedupeBandcamp(root) {
+    if (!root) return;
+    const ps = [...root.querySelectorAll(`[${DONE_ATTR}="embedded"]`)].filter(
+      (p) => p._kind === 'bandcamp' && p._meta
+    );
+    const covered = new Set();
+    ps.filter((p) => p._meta.isAlbum).forEach((p) => p._meta.trackKeys.forEach((k) => covered.add(k)));
+    if (!covered.size) return;
+    ps.forEach((p) => {
+      if (p._meta.isAlbum) return;
+      let k;
+      try {
+        k = keyOf(new URL(p._origUrl));
+      } catch (e) {
+        return;
+      }
+      if (covered.has(k)) {
+        if (p._audio) p._audio.pause();
+        p.remove();
+      }
+    });
+  }
+
   /* ---------- 統一同一則貼文內所有播放器的寬度 ---------- */
   // 文字區塊與媒體區塊的容器寬度可能不同，量出各自可用寬度後統一取最小值
 
@@ -782,6 +830,7 @@
     player.setAttribute('data-music-key', key);
     player.setAttribute('data-music-from', 'card');
     cardEl.replaceWith(player);
+    dedupeBandcamp(root);
     scheduleSync(player);
   }
 
@@ -825,6 +874,7 @@
     player.setAttribute('data-music-from', 'text');
     placeholder.replaceWith(player);
     if (lastInserted.get(blk) === placeholder) lastInserted.set(blk, player);
+    dedupeBandcamp(root);
     scheduleSync(player);
   }
 
