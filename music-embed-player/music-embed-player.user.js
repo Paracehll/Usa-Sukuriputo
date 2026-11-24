@@ -30,6 +30,7 @@
 // @connect      *
 // @noframes
 // @run-at       document-idle
+// @downloadURL  https://raw.githubusercontent.com/Paracehll/Usa-Sukuriputo/main/music-embed-player/music-embed-player.user.js
 // ==/UserScript==
 
 (function () {
